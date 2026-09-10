@@ -77,6 +77,19 @@ function getEnvApiKey(): string | undefined {
   return process.env.ROZALIA_API_KEY;
 }
 
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 5_000;
+
+/**
+ * Discovery timeout (ms) read from ROZALIA_TIMEOUT env var.
+ * Falls back to 5s when unset or invalid.
+ */
+function getDiscoveryTimeoutMs(): number {
+  const raw = process.env.ROZALIA_TIMEOUT;
+  if (!raw) return DEFAULT_DISCOVERY_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DISCOVERY_TIMEOUT_MS;
+}
+
 // ---------------------------------------------------------------------------
 // Model discovery
 // ---------------------------------------------------------------------------
@@ -96,7 +109,7 @@ async function fetchModels(
   // Use a manual timeout via AbortController for Node.js compatibility
   // (AbortSignal.timeout / AbortSignal.any may not be available on older versions)
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5_000);
+  const timer = setTimeout(() => controller.abort(), getDiscoveryTimeoutMs());
   try {
     const response = await fetch(url.toString(), { signal: controller.signal, headers });
 
