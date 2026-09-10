@@ -22,9 +22,9 @@ pi install npm:pi-rozalia
 
 ## Configuration
 
-### Interactive setup (recommended)
+### Single server — interactive setup (recommended)
 
-Use Pi's built-in `/login` command to configure each server:
+Use Pi's built-in `/login` command:
 
 ```bash
 pi
@@ -34,17 +34,7 @@ pi
 → enter API key (optional)
 ```
 
-Each server gets its own provider entry named after its hostname:
-
-| URL | Provider name |
-|-----|---------------|
-| `https://ai.zygoon.pl/v1` | `rozalia-ai-zygoon-pl` |
-| `http://localhost:1234` | `rozalia-localhost-1234` |
-| `https://10.0.0.5:9000` | `rozalia-10-0-0-5-9000` |
-
-To add multiple servers, run `/login` once per server. Each one gets its own provider with its own credential slot in `~/.pi/agent/auth.json`.
-
-### Environment variables (single server)
+### Single server — environment variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -55,19 +45,32 @@ To add multiple servers, run `/login` once per server. Each one gets its own pro
 export ROZALIA_API_KEY="your-api-key"
 ```
 
-### Custom server
+### Multiple servers — config file
 
-Point to any OpenAI-compatible server:
+Create `~/.pi/agent/rozalia-servers.json`:
 
-```bash
-ROZALIA_BASE_URL="https://my-server.example.com/v1" \
-ROZALIA_API_KEY="my-key" \
-pi
+```json
+{
+  "servers": [
+    { "url": "https://ai.zygoon.pl/v1", "apiKey": "key1" },
+    { "url": "http://localhost:1234", "apiKey": "key2" }
+  ]
+}
 ```
+
+Each server gets its own provider named after its hostname:
+
+| URL | Provider name |
+|-----|---------------|
+| `https://ai.zygoon.pl/v1` | `rozalia-ai-zygoon-pl` |
+| `http://localhost:1234` | `rozalia-localhost-1234` |
+| `https://10.0.0.5:9000` | `rozalia-10-0-0-5-9000` |
+
+When the config file exists and has servers listed, it takes precedence over env vars and `/login`.
 
 ## Usage
 
-1. **Launch Pi** — the provider loads automatically on startup.
+1. **Launch Pi** — providers load automatically on startup.
 
    ```bash
    pi
