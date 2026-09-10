@@ -89,27 +89,32 @@ async function fetchModels(
     headers["Authorization"] = `Bearer ${apiKey}`;
   }
 
-  const timeout = AbortSignal.timeout(5_000);
-  const merged = AbortSignal.any([signal, timeout]);
+  // Use a manual timeout via AbortController for Node.js compatibility
+  // (AbortSignal.timeout / AbortSignal.any may not be available on older versions)
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const response = await fetch(url.toString(), { signal: controller.signal, headers });
 
-  const response = await fetch(url.toString(), { signal: merged, headers });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      throw new Error(`Model discovery failed (${response.status}): ${text.slice(0, 200)}`);
+    }
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(`Model discovery failed (${response.status}): ${text.slice(0, 200)}`);
+    const data = (await response.json()) as {
+      data?: Array<Record<string, unknown>>;
+      models?: Array<Record<string, unknown>>;
+    };
+
+    const entries = data.data ?? data.models ?? [];
+    if (!Array.isArray(entries)) {
+      throw new Error("Unexpected /v1/models response format");
+    }
+
+    return entries.map((entry) => mapModel(entry));
+  } finally {
+    clearTimeout(timer);
   }
-
-  const data = await response.json() as {
-    data?: Array<Record<string, unknown>>;
-    models?: Array<Record<string, unknown>>;
-  };
-
-  const entries = data.data ?? data.models ?? [];
-  if (!Array.isArray(entries)) {
-    throw new Error("Unexpected /v1/models response format");
-  }
-
-  return entries.map((entry) => mapModel(entry));
 }
 
 function mapModel(entry: Record<string, unknown>): ProviderModelConfig {
@@ -245,47 +250,36 @@ function createLoginFlow(
     }
 
     // Actually register the provider so models appear immediately
-    await registerRozaliaProvider(pi, creds, {
-      name: "Rozalia",
-      login: createLoginFlow(defaultUrl, defaultApiKey),
-      refreshToken: async (creds: OAuthCredentials, signal: AbortSignal) => {
-        const payload = decodeCreds(creds);
-        try {
-          const ctrl = new AbortController();
-          await fetchModels(payload.baseUrl, payload.apiKey, ctrl.signal);
-        } catch {
-          // network blip
-        }
-        return creds;
-      },
-      getApiKey: (creds: OAuthCredentials) => decodeCreds(creds).apiKey || "",
-    });
+    const oauthBlock = buildOauthBlock(defaultUrl, defaultApiKey);
+    await registerRozaliaProvider(pi, creds, oauthBlock);
 
     return encodeCreds(creds);
   };
 }
 
-async function refreshTokenRozalia(
-  creds: OAuthCredentials,
-  _signal: AbortSignal,
-): Promise<OAuthCredentials> {
-  const payload = decodeCreds(creds);
-  if (!payload.baseUrl) return creds;
+// ---------------------------------------------------------------------------
+// OAuth block factory (shared between /login and startup)
+// ---------------------------------------------------------------------------
 
-  // Re-discover models from stored server
-  try {
-    const controller = new AbortController();
-    await fetchModels(payload.baseUrl, payload.apiKey, controller.signal);
-  } catch {
-    // network blip — keep creds, retry on next call
-  }
-
-  return encodeCreds(payload);
-}
-
-function getApiKeyRozalia(creds: OAuthCredentials): string {
-  const payload = decodeCreds(creds);
-  return payload.apiKey || "";
+function buildOauthBlock(
+  defaultUrl: string,
+  defaultApiKey: string | undefined,
+) {
+  return {
+    name: "Rozalia",
+    login: createLoginFlow(defaultUrl, defaultApiKey),
+    refreshToken: async (creds: OAuthCredentials, _signal: AbortSignal) => {
+      const payload = decodeCreds(creds);
+      try {
+        const ctrl = new AbortController();
+        await fetchModels(payload.baseUrl, payload.apiKey, ctrl.signal);
+      } catch {
+        // network blip
+      }
+      return creds;
+    },
+    getApiKey: (creds: OAuthCredentials) => decodeCreds(creds).apiKey || "",
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -320,22 +314,7 @@ export default async function (pi: ExtensionAPI) {
     // No saved credential — will use env vars or prompt
   }
 
-  const oauthBlock = {
-    name: "Rozalia",
-    login: createLoginFlow(envBaseUrl, envApiKey),
-    refreshToken: async (creds: OAuthCredentials, signal: AbortSignal) => {
-      const payload = decodeCreds(creds);
-      if (!payload.baseUrl) return creds;
-      try {
-        const ctrl = new AbortController();
-        await fetchModels(payload.baseUrl, payload.apiKey, ctrl.signal);
-      } catch {
-        // network blip
-      }
-      return creds;
-    },
-    getApiKey: (creds: OAuthCredentials) => decodeCreds(creds).apiKey || "",
-  };
+  const oauthBlock = buildOauthBlock(envBaseUrl, envApiKey);
 
   // Initial stub registration so "Rozalia" appears in /login selector
   pi.registerProvider("rozalia", {
