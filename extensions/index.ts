@@ -226,8 +226,8 @@ async function registerRozaliaProvider(
 function createLoginFlow(
   defaultUrl: string,
   defaultApiKey: string | undefined,
-): (pi: ExtensionAPI, callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials> {
-  return async (pi: ExtensionAPI, callbacks: OAuthLoginCallbacks) => {
+): (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials> {
+  return async (callbacks: OAuthLoginCallbacks) => {
     const inputUrl = await callbacks.onPrompt({
       message: `Enter Rozalia server URL (press Enter for ${defaultUrl}):`,
     });
@@ -248,10 +248,6 @@ function createLoginFlow(
     } catch {
       // Still register — models will be discovered later or show fallback
     }
-
-    // Actually register the provider so models appear immediately
-    const oauthBlock = buildOauthBlock(defaultUrl, defaultApiKey);
-    await registerRozaliaProvider(pi, creds, oauthBlock);
 
     return encodeCreds(creds);
   };
