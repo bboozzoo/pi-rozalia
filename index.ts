@@ -125,11 +125,14 @@ function mapModel(entry: Record<string, unknown>): ProviderModelConfig {
     (entry.display_name as string) ??
     id;
 
+  // context_length may be nested inside a custom provider object (e.g. rozalia.context_length)
+  const customObj = entry.rozalia as Record<string, unknown> | undefined;
   const contextWindow =
     (entry.context_window as number) ??
     (entry.context as number) ??
     (entry.max_context_length as number) ??
     (entry.maxContextLength as number) ??
+    (customObj?.context_length as number) ??
     128_000;
 
   const maxTokens =
@@ -210,33 +213,55 @@ async function registerRozaliaProvider(
 // OAuth login / refresh
 // ---------------------------------------------------------------------------
 
-async function loginRozalia(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
-  // Try env vars first as defaults
-  const envBaseUrl = getEnvBaseUrl();
-  const envApiKey = getEnvApiKey();
+/**
+ * Create a login flow that captures `pi` in the closure so it can
+ * call registerRozaliaProvider before returning the credential.
+ */
+function createLoginFlow(
+  defaultUrl: string,
+  defaultApiKey: string | undefined,
+): (pi: ExtensionAPI, callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials> {
+  return async (pi: ExtensionAPI, callbacks: OAuthLoginCallbacks) => {
+    const inputUrl = await callbacks.onPrompt({
+      message: `Enter Rozalia server URL (press Enter for ${defaultUrl}):`,
+    });
+    const trimmedUrl = inputUrl.trim();
+    const baseUrl = trimmedUrl ? trimmedUrl : defaultUrl;
 
-  const inputUrl = await callbacks.onPrompt({
-    message: `Enter Rozalia server URL (press Enter for ${envBaseUrl}):`,
-  });
-  const trimmedUrl = inputUrl.trim();
-  const baseUrl = trimmedUrl ? trimmedUrl : envBaseUrl;
+    const inputKey = await callbacks.onPrompt({
+      message: `Enter API key (optional — press Enter to skip):`,
+    });
+    const apiKey = inputKey.trim() || defaultApiKey || "";
 
-  const inputKey = await callbacks.onPrompt({
-    message: `Enter API key (optional — press Enter to skip):`,
-  });
-  const apiKey = inputKey.trim() || envApiKey || "";
+    const creds: CredsPayload = { baseUrl, apiKey };
 
-  const creds: CredsPayload = { baseUrl, apiKey };
+    // Verify connectivity and fetch models
+    try {
+      const controller = new AbortController();
+      await fetchModels(baseUrl, apiKey, controller.signal);
+    } catch {
+      // Still register — models will be discovered later or show fallback
+    }
 
-  // Verify connectivity and fetch models
-  try {
-    const controller = new AbortController();
-    await fetchModels(baseUrl, apiKey, controller.signal);
-  } catch {
-    // Still register — models will be discovered later or show fallback
-  }
+    // Actually register the provider so models appear immediately
+    await registerRozaliaProvider(pi, creds, {
+      name: "Rozalia",
+      login: createLoginFlow(defaultUrl, defaultApiKey),
+      refreshToken: async (creds: OAuthCredentials, signal: AbortSignal) => {
+        const payload = decodeCreds(creds);
+        try {
+          const ctrl = new AbortController();
+          await fetchModels(payload.baseUrl, payload.apiKey, ctrl.signal);
+        } catch {
+          // network blip
+        }
+        return creds;
+      },
+      getApiKey: (creds: OAuthCredentials) => decodeCreds(creds).apiKey || "",
+    });
 
-  return encodeCreds(creds);
+    return encodeCreds(creds);
+  };
 }
 
 async function refreshTokenRozalia(
@@ -267,17 +292,30 @@ function getApiKeyRozalia(creds: OAuthCredentials): string {
 // ---------------------------------------------------------------------------
 
 export default async function (pi: ExtensionAPI) {
+  const envBaseUrl = getEnvBaseUrl();
+  const envApiKey = getEnvApiKey();
+
   const oauthBlock = {
     name: "Rozalia",
-    login: loginRozalia,
-    refreshToken: refreshTokenRozalia,
-    getApiKey: getApiKeyRozalia,
+    login: createLoginFlow(envBaseUrl, envApiKey),
+    refreshToken: async (creds: OAuthCredentials, signal: AbortSignal) => {
+      const payload = decodeCreds(creds);
+      if (!payload.baseUrl) return creds;
+      try {
+        const ctrl = new AbortController();
+        await fetchModels(payload.baseUrl, payload.apiKey, ctrl.signal);
+      } catch {
+        // network blip
+      }
+      return creds;
+    },
+    getApiKey: (creds: OAuthCredentials) => decodeCreds(creds).apiKey || "",
   };
 
   // Initial stub registration so "Rozalia" appears in /login selector
   pi.registerProvider("rozalia", {
     name: "Rozalia",
-    baseUrl: getEnvBaseUrl(),
+    baseUrl: envBaseUrl,
     api: "openai-completions",
     models: [],
     oauth: oauthBlock,
@@ -285,9 +323,8 @@ export default async function (pi: ExtensionAPI) {
 
   // Best-effort: if env vars provide a key, register eagerly so models
   // appear without waiting for the next /login refresh tick.
-  const envApiKey = getEnvApiKey();
   if (envApiKey) {
-    const envCreds: CredsPayload = { baseUrl: getEnvBaseUrl(), apiKey: envApiKey };
+    const envCreds: CredsPayload = { baseUrl: envBaseUrl, apiKey: envApiKey };
     try {
       await registerRozaliaProvider(pi, envCreds, oauthBlock);
     } catch {
