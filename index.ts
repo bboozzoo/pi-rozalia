@@ -28,6 +28,7 @@
  */
 
 import type { ExtensionAPI, OAuthCredentials, OAuthLoginCallbacks, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import * as fs from "node:fs";
 
 // ---------------------------------------------------------------------------
 // Credential payload (stored in OAuth refresh field)
@@ -295,6 +296,30 @@ export default async function (pi: ExtensionAPI) {
   const envBaseUrl = getEnvBaseUrl();
   const envApiKey = getEnvApiKey();
 
+  // Try to restore saved credentials from auth.json.
+  // Handles both our custom OAuth format ({ refresh, access }) and
+  // Pi's built-in api_key format ({ type: "api_key", key }).
+  let storedCreds: CredsPayload | null = null;
+  try {
+    const authPath = `${process.env.HOME ?? "/"}/.pi/agent/auth.json`;
+    const raw = fs.readFileSync(authPath, "utf-8");
+    const auth = JSON.parse(raw) as Record<string, unknown>;
+    const cred = auth["rozalia"] as Record<string, unknown> | undefined;
+    if (cred) {
+      // Built-in api_key format
+      if (cred.type === "api_key" && typeof cred.key === "string" && cred.key) {
+        storedCreds = { baseUrl: envBaseUrl, apiKey: cred.key };
+      }
+      // Custom OAuth format
+      else {
+        const parsed = decodeCreds(cred as OAuthCredentials);
+        if (parsed.baseUrl) storedCreds = parsed;
+      }
+    }
+  } catch {
+    // No saved credential — will use env vars or prompt
+  }
+
   const oauthBlock = {
     name: "Rozalia",
     login: createLoginFlow(envBaseUrl, envApiKey),
@@ -321,12 +346,18 @@ export default async function (pi: ExtensionAPI) {
     oauth: oauthBlock,
   });
 
-  // Best-effort: if env vars provide a key, register eagerly so models
-  // appear without waiting for the next /login refresh tick.
+  // Best-effort: if env vars OR saved credentials provide a key,
+  // register eagerly so models appear without waiting for /login.
+  let credsToUse: CredsPayload | null = null;
   if (envApiKey) {
-    const envCreds: CredsPayload = { baseUrl: envBaseUrl, apiKey: envApiKey };
+    credsToUse = { baseUrl: envBaseUrl, apiKey: envApiKey };
+  } else if (storedCreds?.apiKey) {
+    credsToUse = storedCreds;
+  }
+
+  if (credsToUse) {
     try {
-      await registerRozaliaProvider(pi, envCreds, oauthBlock);
+      await registerRozaliaProvider(pi, credsToUse, oauthBlock);
     } catch {
       // ignore — will retry on next call
     }
