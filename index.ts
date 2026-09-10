@@ -4,33 +4,71 @@
  * Registers an OpenAI-compatible provider for the Pi coding agent,
  * connecting to a Rozalia AI server.
  *
- * Configuration:
- *   ROZALIA_BASE_URL  — server base URL (default: https://ai.zygoon.pl/v1)
- *   ROZALIA_API_KEY   — API key for authentication
+ * Configuration (in order of precedence):
+ *   1. /login → OAuth flow (stores baseUrl + apiKey in ~/.pi/agent/auth.json)
+ *   2. ROZALIA_BASE_URL  env var (default: https://ai.zygoon.pl/v1)
+ *   3. ROZALIA_API_KEY   env var
  *
  * Usage:
+ *   # Quick: set env vars
  *   export ROZALIA_API_KEY="your-api-key"
- *   pi                          # provider loads automatically
+ *   pi
  *
- *   # Or use a custom server:
- *   export ROZALIA_BASE_URL="https://my-server.example.com/v1"
- *   export ROZALIA_API_KEY="my-key"
+ *   # Full: use /login to configure server URL + API key interactively
+ *   pi
+ *   /login
+ *   → pick "rozalia"
+ *   → enter server URL (default: https://ai.zygoon.pl/v1)
+ *   → enter API key
+ *
+ *   # Point to a custom server
+ *   ROZALIA_BASE_URL="https://my-server.example.com/v1" \
+ *   ROZALIA_API_KEY="my-key" \
  *   pi
  */
 
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, OAuthCredentials, OAuthLoginCallbacks, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 // ---------------------------------------------------------------------------
-// Configuration
+// Credential payload (stored in OAuth refresh field)
+// ---------------------------------------------------------------------------
+
+interface CredsPayload {
+  baseUrl: string;
+  apiKey: string;
+}
+
+function encodeCreds(payload: CredsPayload): OAuthCredentials {
+  return {
+    refresh: JSON.stringify(payload),
+    access: payload.apiKey,
+    expires: Date.now() + 24 * 60 * 60 * 1000,
+  };
+}
+
+function decodeCreds(creds: OAuthCredentials): CredsPayload {
+  try {
+    const parsed = JSON.parse(creds.refresh ?? "");
+    return {
+      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
+      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : (creds.access ?? ""),
+    };
+  } catch {
+    return { baseUrl: "", apiKey: creds.access ?? "" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Configuration fallback (env vars)
 // ---------------------------------------------------------------------------
 
 const DEFAULT_BASE_URL = "https://ai.zygoon.pl/v1";
 
-function getBaseUrl(): string {
+function getEnvBaseUrl(): string {
   return process.env.ROZALIA_BASE_URL ?? DEFAULT_BASE_URL;
 }
 
-function getApiKey(): string | undefined {
+function getEnvApiKey(): string | undefined {
   return process.env.ROZALIA_API_KEY;
 }
 
@@ -38,10 +76,12 @@ function getApiKey(): string | undefined {
 // Model discovery
 // ---------------------------------------------------------------------------
 
-/** Fetch models from the server's /v1/models endpoint. */
-async function fetchModels(baseUrl: string, signal: AbortSignal): Promise<ProviderModelConfig[]> {
+async function fetchModels(
+  baseUrl: string,
+  apiKey: string | undefined,
+  signal: AbortSignal,
+): Promise<ProviderModelConfig[]> {
   const url = new URL("/v1/models", baseUrl);
-  const apiKey = getApiKey();
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) {
@@ -63,7 +103,6 @@ async function fetchModels(baseUrl: string, signal: AbortSignal): Promise<Provid
     models?: Array<Record<string, unknown>>;
   };
 
-  // Support both paginated (data) and flat (models) response shapes
   const entries = data.data ?? data.models ?? [];
   if (!Array.isArray(entries)) {
     throw new Error("Unexpected /v1/models response format");
@@ -72,7 +111,6 @@ async function fetchModels(baseUrl: string, signal: AbortSignal): Promise<Provid
   return entries.map((entry) => mapModel(entry));
 }
 
-/** Map a provider-agnostic model entry to Pi's ProviderModelConfig. */
 function mapModel(entry: Record<string, unknown>): ProviderModelConfig {
   const id =
     (entry.id as string) ??
@@ -111,7 +149,6 @@ function mapModel(entry: Record<string, unknown>): ProviderModelConfig {
   };
 }
 
-/** Fallback models when discovery fails or returns nothing. */
 function getFallbackModels(): ProviderModelConfig[] {
   return [
     {
@@ -127,18 +164,26 @@ function getFallbackModels(): ProviderModelConfig[] {
 }
 
 // ---------------------------------------------------------------------------
-// Extension entry point
+// Provider registration helper
 // ---------------------------------------------------------------------------
 
-export default async function (pi: ExtensionAPI) {
-  const baseUrl = getBaseUrl();
-  const apiKey = getApiKey();
+async function registerRozaliaProvider(
+  pi: ExtensionAPI,
+  creds: CredsPayload,
+  oauthBlock: {
+    name: string;
+    login: (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials>;
+    refreshToken: (creds: OAuthCredentials, signal: AbortSignal) => Promise<OAuthCredentials>;
+    getApiKey: (creds: OAuthCredentials) => string;
+  },
+): Promise<void> {
+  const { baseUrl, apiKey } = creds;
+  if (!baseUrl) return;
 
   let models: ProviderModelConfig[];
-
   try {
     const controller = new AbortController();
-    models = await fetchModels(baseUrl, controller.signal);
+    models = await fetchModels(baseUrl, apiKey, controller.signal);
     if (models.length === 0) {
       models = getFallbackModels();
     }
@@ -146,15 +191,107 @@ export default async function (pi: ExtensionAPI) {
     models = getFallbackModels();
   }
 
-  const providerConfig: Record<string, unknown> = {
+  const config: Record<string, unknown> = {
+    name: "Rozalia",
     baseUrl,
     api: "openai-completions",
     models,
+    oauth: oauthBlock,
   };
 
   if (apiKey) {
-    providerConfig.apiKey = apiKey;
+    config.apiKey = apiKey;
   }
 
-  pi.registerProvider("rozalia", providerConfig);
+  pi.registerProvider("rozalia", config);
+}
+
+// ---------------------------------------------------------------------------
+// OAuth login / refresh
+// ---------------------------------------------------------------------------
+
+async function loginRozalia(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
+  // Try env vars first as defaults
+  const envBaseUrl = getEnvBaseUrl();
+  const envApiKey = getEnvApiKey();
+
+  const inputUrl = await callbacks.onPrompt({
+    message: `Enter Rozalia server URL (press Enter for ${envBaseUrl}):`,
+  });
+  const trimmedUrl = inputUrl.trim();
+  const baseUrl = trimmedUrl ? trimmedUrl : envBaseUrl;
+
+  const inputKey = await callbacks.onPrompt({
+    message: `Enter API key (optional — press Enter to skip):`,
+  });
+  const apiKey = inputKey.trim() || envApiKey || "";
+
+  const creds: CredsPayload = { baseUrl, apiKey };
+
+  // Verify connectivity and fetch models
+  try {
+    const controller = new AbortController();
+    await fetchModels(baseUrl, apiKey, controller.signal);
+  } catch {
+    // Still register — models will be discovered later or show fallback
+  }
+
+  return encodeCreds(creds);
+}
+
+async function refreshTokenRozalia(
+  creds: OAuthCredentials,
+  _signal: AbortSignal,
+): Promise<OAuthCredentials> {
+  const payload = decodeCreds(creds);
+  if (!payload.baseUrl) return creds;
+
+  // Re-discover models from stored server
+  try {
+    const controller = new AbortController();
+    await fetchModels(payload.baseUrl, payload.apiKey, controller.signal);
+  } catch {
+    // network blip — keep creds, retry on next call
+  }
+
+  return encodeCreds(payload);
+}
+
+function getApiKeyRozalia(creds: OAuthCredentials): string {
+  const payload = decodeCreds(creds);
+  return payload.apiKey || "";
+}
+
+// ---------------------------------------------------------------------------
+// Extension entry point
+// ---------------------------------------------------------------------------
+
+export default async function (pi: ExtensionAPI) {
+  const oauthBlock = {
+    name: "Rozalia",
+    login: loginRozalia,
+    refreshToken: refreshTokenRozalia,
+    getApiKey: getApiKeyRozalia,
+  };
+
+  // Initial stub registration so "Rozalia" appears in /login selector
+  pi.registerProvider("rozalia", {
+    name: "Rozalia",
+    baseUrl: getEnvBaseUrl(),
+    api: "openai-completions",
+    models: [],
+    oauth: oauthBlock,
+  });
+
+  // Best-effort: if env vars provide a key, register eagerly so models
+  // appear without waiting for the next /login refresh tick.
+  const envApiKey = getEnvApiKey();
+  if (envApiKey) {
+    const envCreds: CredsPayload = { baseUrl: getEnvBaseUrl(), apiKey: envApiKey };
+    try {
+      await registerRozaliaProvider(pi, envCreds, oauthBlock);
+    } catch {
+      // ignore — will retry on next call
+    }
+  }
 }

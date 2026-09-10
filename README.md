@@ -15,24 +15,39 @@ pi install npm:pi-rozalia
 
 ## Configuration
 
-### Environment Variables
+### Interactive setup (recommended)
+
+Use Pi's built-in `/login` command to configure your server and API key:
+
+```bash
+pi
+/login
+→ pick "Rozalia"
+→ enter server URL (default: https://ai.zygoon.pl/v1)
+→ enter API key (optional)
+```
+
+The server URL and API key are stored in `~/.pi/agent/auth.json` and reused on subsequent logins.
+
+### Environment variables (alternative)
 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ROZALIA_BASE_URL` | Rozalia AI server base URL | `https://ai.zygoon.pl/v1` |
-| `ROZALIA_API_KEY` | API key for authentication | *(none — required if auth is enabled)* |
+| `ROZALIA_API_KEY` | API key for authentication | *(none)* |
 
 ```bash
 export ROZALIA_API_KEY="your-api-key"
 ```
 
-### Custom Server
+### Custom server
 
 Point to any OpenAI-compatible server:
 
 ```bash
-export ROZALIA_BASE_URL="https://my-server.example.com/v1"
-export ROZALIA_API_KEY="my-key"
+ROZALIA_BASE_URL="https://my-server.example.com/v1" \
+ROZALIA_API_KEY="my-key" \
+pi
 ```
 
 ## Usage
@@ -49,6 +64,8 @@ export ROZALIA_API_KEY="my-key"
 
 On startup, the extension fetches the model list from the server's `/v1/models` endpoint and registers each model with Pi. If discovery fails, a single fallback model is registered so you can still try to connect.
 
+The `/login` flow stores your server URL and API key in Pi's credential store (`~/.pi/agent/auth.json`). On subsequent logins the stored URL is pre-filled, so you only need to re-enter it if your server changes.
+
 ## License
 
-MIT
+[MIT](LICENSE) — © 2026 Maciej Borzecki
