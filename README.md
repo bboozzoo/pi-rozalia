@@ -66,6 +66,10 @@ On startup, the extension fetches the model list from the server's `/v1/models` 
 
 The `/login` flow stores your server URL and API key in Pi's credential store (`~/.pi/agent/auth.json`). On subsequent logins the stored URL is pre-filled, so you only need to re-enter it if your server changes.
 
+## Known Limitations
+
+- **Models stay listed after `/logout`.** Pi's extension API has no logout callback/event for OAuth-backed providers, so this extension has no way to detect that `/logout` ran and revert the provider to its empty stub. The model list only clears on the next Pi restart. This is a Pi platform limitation, not something this extension can currently work around.
+
 ## TODO
 
 - [ ] Multi-server support — register each configured server as its own provider with a derived name (e.g. `rozalia-localhost-1234`), so models from different servers are unambiguous in the picker
