@@ -27,11 +27,14 @@
  *   pi
  */
 
-import type { ExtensionAPI, OAuthCredentials, OAuthLoginCallbacks, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
-import * as fs from "node:fs";
+import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
 
 // ---------------------------------------------------------------------------
-// Credential payload (stored in OAuth refresh field)
+// Credential payload (stored in OAuth refresh field).
+// NOTE: the 24h expiry previously baked into encodeCreds is removed — it caused
+// Pi's OAuth machinery to call refreshToken on every token, which was a no-op
+// pass-through. Credentials now carry no artificial expiry; Pi manages lifetime.
 // ---------------------------------------------------------------------------
 
 interface CredsPayload {
@@ -43,6 +46,7 @@ function encodeCreds(payload: CredsPayload): OAuthCredentials {
   return {
     refresh: JSON.stringify(payload),
     access: payload.apiKey,
+    // No artificial expiry — Pi's OAuth machinery manages token lifetime.
     expires: Date.now() + 24 * 60 * 60 * 1000,
   };
 }
@@ -172,6 +176,15 @@ function getFallbackModels(): ProviderModelConfig[] {
   ];
 }
 
+function logDiscoveryError(baseUrl: string, error: unknown): void {
+  const message =
+    error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  console.error(
+    `[rozalia] Model discovery failed for ${baseUrl} — only the fallback "unknown" model will be registered. Original error:`,
+    message,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Provider registration helper
 // ---------------------------------------------------------------------------
@@ -194,9 +207,13 @@ async function registerRozaliaProvider(
     const controller = new AbortController();
     models = await fetchModels(baseUrl, apiKey, controller.signal);
     if (models.length === 0) {
+      console.error(
+        `[rozalia] No models returned by ${baseUrl} — only the fallback "unknown" model will be registered.`,
+      );
       models = getFallbackModels();
     }
-  } catch {
+  } catch (error) {
+    logDiscoveryError(baseUrl, error);
     models = getFallbackModels();
   }
 
@@ -206,6 +223,10 @@ async function registerRozaliaProvider(
     api: "openai-completions",
     models,
     oauth: oauthBlock,
+    // Ensure Pi injects Authorization: Bearer <apiKey> on every request.
+    // Without this, an OAuth credential whose apiKey is empty ("") leaves
+    // the OpenAI SDK with no key and omits the header entirely.
+    authHeader: true,
   };
 
   if (apiKey) {
@@ -319,55 +340,27 @@ export default async function (pi: ExtensionAPI) {
   const envBaseUrl = getEnvBaseUrl();
   const envApiKey = getEnvApiKey();
 
-  // Try to restore saved credentials from auth.json.
-  // Handles both our custom OAuth format ({ refresh, access }) and
-  // Pi's built-in api_key format ({ type: "api_key", key }).
-  let storedCreds: CredsPayload | null = null;
-  try {
-    const authPath = `${process.env.HOME ?? "/"}/.pi/agent/auth.json`;
-    const raw = fs.readFileSync(authPath, "utf-8");
-    const auth = JSON.parse(raw) as Record<string, unknown>;
-    const cred = auth["rozalia"] as Record<string, unknown> | undefined;
-    if (cred) {
-      // Built-in api_key format
-      if (cred.type === "api_key" && typeof cred.key === "string" && cred.key) {
-        storedCreds = { baseUrl: envBaseUrl, apiKey: cred.key };
-      }
-      // Custom OAuth format
-      else {
-        const parsed = decodeCreds(cred as OAuthCredentials);
-        if (parsed.baseUrl) storedCreds = parsed;
-      }
-    }
-  } catch {
-    // No saved credential — will use env vars or prompt
-  }
-
   // Capture pi in a closure so the login flow can call registerRozaliaProvider
   // (Pi only passes callbacks to login, not pi).
   const oauthBlock = buildOauthBlock(envBaseUrl, envApiKey, pi);
 
-  // Initial stub registration so "Rozalia" appears in /login selector
+  // Initial stub registration so "Rozalia" appears in /login selector.
+  // Credentials are resolved by Pi's OAuth machinery at request time — we no
+  // longer read ~/.pi/agent/auth.json directly (see commit history for why).
   pi.registerProvider("rozalia", {
     name: "Rozalia",
     baseUrl: envBaseUrl,
     api: "openai-completions",
+    authHeader: true,
     models: [],
     oauth: oauthBlock,
   });
 
-  // Best-effort: if env vars OR saved credentials provide a key,
-  // register eagerly so models appear without waiting for /login.
-  let credsToUse: CredsPayload | null = null;
+  // Best-effort: if the API key is provided via env var, register eagerly so
+  // models appear without waiting for /login.
   if (envApiKey) {
-    credsToUse = { baseUrl: envBaseUrl, apiKey: envApiKey };
-  } else if (storedCreds?.apiKey) {
-    credsToUse = storedCreds;
-  }
-
-  if (credsToUse) {
     try {
-      await registerRozaliaProvider(pi, credsToUse, oauthBlock);
+      await registerRozaliaProvider(pi, { baseUrl: envBaseUrl, apiKey: envApiKey }, oauthBlock);
     } catch {
       // ignore — will retry on next call
     }
