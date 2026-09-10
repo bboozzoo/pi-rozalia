@@ -1,11 +1,18 @@
 # pi-rozalia
 
-An extension for the [Pi coding agent](https://github.com/microsoft/pi-coding-agent) that connects to a [Rozalia AI](https://ai.zygoon.pl) server via the OpenAI-compatible Chat Completions API.
+An extension for the [Pi coding agent](https://github.com/microsoft/pi-coding-agent) that connects to one or more [Rozalia AI](https://ai.zygoon.pl) servers via the OpenAI-compatible Chat Completions API.
+
+Each server is registered as a separate provider named after its hostname, so models from different servers are unambiguous in the picker:
+
+```
+rozalia-ai-zygoon-pl/claude-sonnet-4-6
+rozalia-localhost-1234/deepseek-r1
+```
 
 ## Prerequisites
 
 1. **Pi Coding Agent** installed.
-2. A **Rozalia AI server** running and accessible.
+2. One or more **Rozalia AI servers** running and accessible.
 
 ## Installation
 
@@ -17,7 +24,7 @@ pi install npm:pi-rozalia
 
 ### Interactive setup (recommended)
 
-Use Pi's built-in `/login` command to configure your server and API key:
+Use Pi's built-in `/login` command to configure each server:
 
 ```bash
 pi
@@ -27,9 +34,17 @@ pi
 → enter API key (optional)
 ```
 
-The server URL and API key are stored in `~/.pi/agent/auth.json` and reused on subsequent logins.
+Each server gets its own provider entry named after its hostname:
 
-### Environment variables (alternative)
+| URL | Provider name |
+|-----|---------------|
+| `https://ai.zygoon.pl/v1` | `rozalia-ai-zygoon-pl` |
+| `http://localhost:1234` | `rozalia-localhost-1234` |
+| `https://10.0.0.5:9000` | `rozalia-10-0-0-5-9000` |
+
+To add multiple servers, run `/login` once per server. Each one gets its own provider with its own credential slot in `~/.pi/agent/auth.json`.
+
+### Environment variables (single server)
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -58,11 +73,13 @@ pi
    pi
    ```
 
-2. **Select a Model** — use `/model` or `Ctrl+P` to pick from the discovered models.
+2. **Select a Model** — use `/model` or `Ctrl+P` to pick from the discovered models. Models are prefixed with the provider name (e.g. `rozalia-ai-zygoon-pl/...`).
 
 ## How It Works
 
-On startup, the extension fetches the model list from the server's `/v1/models` endpoint and registers each model with Pi. If discovery fails, a single fallback model is registered so you can still try to connect.
+On startup, the extension discovers the configured server(s) and fetches the model list from each server's `/v1/models` endpoint. Each server is registered as a separate provider with a name derived from its hostname.
+
+If discovery fails for a server, a single fallback model is registered so you can still try to connect.
 
 The `/login` flow stores your server URL and API key in Pi's credential store (`~/.pi/agent/auth.json`). On subsequent logins the stored URL is pre-filled, so you only need to re-enter it if your server changes.
 
