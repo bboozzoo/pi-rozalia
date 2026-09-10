@@ -285,15 +285,8 @@ function createLoginFlow(
 
     const creds: CredsPayload = { baseUrl, apiKey };
 
-    // Verify connectivity and fetch models
-    try {
-      const controller = new AbortController();
-      await fetchModels(baseUrl, apiKey, controller.signal);
-    } catch {
-      // Still register — models will be discovered later or show fallback
-    }
-
-    // Actually register the provider so models appear immediately
+    // Register the provider — registerRozaliaProvider fetches models once,
+    // logging and falling back to a stub on failure.
     const oauthBlock = buildOauthBlock(defaultUrl, defaultApiKey, pi);
     await registerRozaliaProvider(pi, creds, oauthBlock);
 
@@ -310,21 +303,21 @@ function buildOauthBlock(
   defaultApiKey: string | undefined,
   pi: ExtensionAPI,
 ) {
-  return {
+  // Hoist the oauth block so refreshToken can reference it without
+  // rebuilding a new object on every refresh. Previously, refreshToken
+  // constructed an entirely new OAuth config (including nested login /
+  // refreshToken closures) and re-registered — wasteful and confusing.
+  const oauthBlock = {
     name: "Rozalia",
     login: createLoginFlow(defaultUrl, defaultApiKey, pi),
-    refreshToken: async (creds: OAuthCredentials, signal: AbortSignal) => {
+    refreshToken: async (creds: OAuthCredentials) => {
       const payload = decodeCreds(creds);
       if (!payload.baseUrl) return creds;
-      // Re-register with fresh models so the picker updates without restart
+      // Re-register with fresh models so the picker updates without restart.
+      // Reuse this same oauthBlock instead of reconstructing it — only the
+      // model list changes, not the auth callbacks.
       try {
-        await registerRozaliaProvider(pi, payload, {
-          name: "Rozalia",
-          login: createLoginFlow(defaultUrl, defaultApiKey, pi),
-          refreshToken: async (c: OAuthCredentials, s: AbortSignal) =>
-            refreshTokenRozalia(c, s, payload, defaultUrl, defaultApiKey, pi),
-          getApiKey: (c: OAuthCredentials) => decodeCreds(c).apiKey || "",
-        });
+        await registerRozaliaProvider(pi, payload, oauthBlock);
       } catch {
         // network blip — keep creds, retry on next call
       }
@@ -332,17 +325,7 @@ function buildOauthBlock(
     },
     getApiKey: (creds: OAuthCredentials) => decodeCreds(creds).apiKey || "",
   };
-}
-
-async function refreshTokenRozalia(
-  creds: OAuthCredentials,
-  _signal: AbortSignal,
-  _payload: CredsPayload,
-  _defaultUrl: string,
-  _defaultApiKey: string | undefined,
-  _pi: ExtensionAPI,
-): Promise<OAuthCredentials> {
-  return encodeCreds(decodeCreds(creds));
+  return oauthBlock;
 }
 
 // ---------------------------------------------------------------------------
