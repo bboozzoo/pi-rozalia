@@ -34,7 +34,9 @@ The server URL and API key are stored in `~/.pi/agent/auth.json` and reused on s
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `ROZALIA_BASE_URL` | Rozalia AI server base URL | `https://ai.zygoon.pl/v1` |
+| `ROZALIA_BASE_URL` | Rozalia AI server base URL | `https://ai.zygoon.pl/v1` |
 | `ROZALIA_API_KEY` | API key for authentication | *(none)* |
+| `ROZALIA_TIMEOUT` | Model discovery timeout in ms | `5000` |
 
 ```bash
 export ROZALIA_API_KEY="your-api-key"
@@ -74,7 +76,6 @@ The `/login` flow stores your server URL and API key in Pi's credential store (`
 
 - [ ] Multi-server support — register each configured server as its own provider with a derived name (e.g. `rozalia-localhost-1234`), so models from different servers are unambiguous in the picker
 - [ ] Model discovery health check — skip servers that fail to respond rather than showing fallback models
-- [ ] `ROZALIA_TIMEOUT` env var — configure model discovery timeout (currently hardcoded to 5s)
 - [ ] Support for `ROZALIA_MODELS` env var — allow overriding the discovered model list with a static list
 
 ## License
