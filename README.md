@@ -66,6 +66,13 @@ On startup, the extension fetches the model list from the server's `/v1/models` 
 
 The `/login` flow stores your server URL and API key in Pi's credential store (`~/.pi/agent/auth.json`). On subsequent logins the stored URL is pre-filled, so you only need to re-enter it if your server changes.
 
+## TODO
+
+- [ ] Multi-server support — register each configured server as its own provider with a derived name (e.g. `rozalia-localhost-1234`), so models from different servers are unambiguous in the picker
+- [ ] Model discovery health check — skip servers that fail to respond rather than showing fallback models
+- [ ] `ROZALIA_TIMEOUT` env var — configure model discovery timeout (currently hardcoded to 5s)
+- [ ] Support for `ROZALIA_MODELS` env var — allow overriding the discovered model list with a static list
+
 ## License
 
 [MIT](LICENSE) — © 2026 Maciej Borzecki
