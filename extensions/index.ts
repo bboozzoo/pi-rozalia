@@ -212,6 +212,15 @@ async function registerRozaliaProvider(
     config.apiKey = apiKey;
   }
 
+  // Unregister first so Pi replaces the stub (empty models) with
+  // the real model list. Without this, registerProvider keeps
+  // the stub's models: [] on an already-registered provider.
+  try {
+    pi.unregisterProvider("rozalia");
+  } catch {
+    // not previously registered; ignore
+  }
+
   pi.registerProvider("rozalia", config);
 }
 
@@ -226,6 +235,7 @@ async function registerRozaliaProvider(
 function createLoginFlow(
   defaultUrl: string,
   defaultApiKey: string | undefined,
+  pi: ExtensionAPI,
 ): (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials> {
   return async (callbacks: OAuthLoginCallbacks) => {
     const inputUrl = await callbacks.onPrompt({
@@ -249,6 +259,10 @@ function createLoginFlow(
       // Still register — models will be discovered later or show fallback
     }
 
+    // Actually register the provider so models appear immediately
+    const oauthBlock = buildOauthBlock(defaultUrl, defaultApiKey, pi);
+    await registerRozaliaProvider(pi, creds, oauthBlock);
+
     return encodeCreds(creds);
   };
 }
@@ -260,22 +274,41 @@ function createLoginFlow(
 function buildOauthBlock(
   defaultUrl: string,
   defaultApiKey: string | undefined,
+  pi: ExtensionAPI,
 ) {
   return {
     name: "Rozalia",
-    login: createLoginFlow(defaultUrl, defaultApiKey),
-    refreshToken: async (creds: OAuthCredentials, _signal: AbortSignal) => {
+    login: createLoginFlow(defaultUrl, defaultApiKey, pi),
+    refreshToken: async (creds: OAuthCredentials, signal: AbortSignal) => {
       const payload = decodeCreds(creds);
+      if (!payload.baseUrl) return creds;
+      // Re-register with fresh models so the picker updates without restart
       try {
-        const ctrl = new AbortController();
-        await fetchModels(payload.baseUrl, payload.apiKey, ctrl.signal);
+        await registerRozaliaProvider(pi, payload, {
+          name: "Rozalia",
+          login: createLoginFlow(defaultUrl, defaultApiKey, pi),
+          refreshToken: async (c: OAuthCredentials, s: AbortSignal) =>
+            refreshTokenRozalia(c, s, payload, defaultUrl, defaultApiKey, pi),
+          getApiKey: (c: OAuthCredentials) => decodeCreds(c).apiKey || "",
+        });
       } catch {
-        // network blip
+        // network blip — keep creds, retry on next call
       }
-      return creds;
+      return encodeCreds(payload);
     },
     getApiKey: (creds: OAuthCredentials) => decodeCreds(creds).apiKey || "",
   };
+}
+
+async function refreshTokenRozalia(
+  creds: OAuthCredentials,
+  _signal: AbortSignal,
+  _payload: CredsPayload,
+  _defaultUrl: string,
+  _defaultApiKey: string | undefined,
+  _pi: ExtensionAPI,
+): Promise<OAuthCredentials> {
+  return encodeCreds(decodeCreds(creds));
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +343,9 @@ export default async function (pi: ExtensionAPI) {
     // No saved credential — will use env vars or prompt
   }
 
-  const oauthBlock = buildOauthBlock(envBaseUrl, envApiKey);
+  // Capture pi in a closure so the login flow can call registerRozaliaProvider
+  // (Pi only passes callbacks to login, not pi).
+  const oauthBlock = buildOauthBlock(envBaseUrl, envApiKey, pi);
 
   // Initial stub registration so "Rozalia" appears in /login selector
   pi.registerProvider("rozalia", {
