@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    /* Language and module settings */
+    "target": "ES2022",
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "resolveJsonModule": true,
+
+    /* Type checking */
+    "strict": true,
+    "skipLibCheck": true,
+
+    /* Emit — type-check only, no output */
+    "noEmit": true,
+    "isolatedModules": true
+  },
+  "include": ["extensions/**/*.ts"]
+}

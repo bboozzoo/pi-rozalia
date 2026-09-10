@@ -19,5 +19,8 @@
     "extensions": [
       "./extensions"
     ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   }
 }
