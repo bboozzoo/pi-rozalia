@@ -29,6 +29,7 @@
 
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@earendil-works/pi-ai";
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
 
 // ---------------------------------------------------------------------------
 // Credential payload (stored in OAuth refresh field).
@@ -199,6 +200,73 @@ function logDiscoveryError(baseUrl: string, error: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// TTL cache for model discovery
+// ---------------------------------------------------------------------------
+
+let cachedModels: ProviderModelConfig[] = [];
+let lastFetchedAt = 0;
+const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Resolve baseUrl and apiKey from Pi's credential context.
+ *
+ * Priority: oauth credential > env vars.
+ * This is called by Pi during its refresh cycle — the credential is the
+ * effective configured auth (OAuth stored in ~/.pi/agent/auth.json or
+ * env-based API key).
+ */
+function resolveAuthFromContext(context: RefreshModelsContext): { baseUrl: string; apiKey: string } {
+  let baseUrl = getEnvBaseUrl();
+  let apiKey = getEnvApiKey();
+
+  const cred = context.credential;
+  if (cred?.type === "oauth") {
+    const p = decodeCreds(cred as OAuthCredentials);
+    if (p.baseUrl) baseUrl = p.baseUrl;
+    if (p.apiKey) apiKey = p.apiKey;
+  } else if (cred?.type === "api_key" && typeof cred.key === "string") {
+    apiKey = apiKey || cred.key;
+  }
+
+  return { baseUrl, apiKey };
+}
+
+/**
+ * The `refreshModels` hook — called by Pi on every refresh cycle (startup,
+ * explicit model refresh, etc.). Implements a TTL cache to avoid hammering
+ * the server while still responding to real changes within 5 minutes.
+ */
+async function refreshRozaliaModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
+  // TTL cache: skip fetch if we have a fresh list and caller didn't force
+  if (context.allowNetwork && !context.force && cachedModels.length > 0) {
+    const age = Date.now() - lastFetchedAt;
+    if (age < MODEL_CACHE_TTL_MS) {
+      return cachedModels;
+    }
+  }
+
+  const { baseUrl, apiKey } = resolveAuthFromContext(context);
+  if (!baseUrl) {
+    return cachedModels.length > 0 ? cachedModels : getFallbackModels();
+  }
+
+  try {
+    const controller = new AbortController();
+    const fetched = await fetchModels(baseUrl, apiKey, controller.signal);
+    if (fetched.length > 0) {
+      cachedModels = fetched;
+      lastFetchedAt = Date.now();
+      return fetched;
+    }
+    return getFallbackModels();
+  } catch (error) {
+    logDiscoveryError(baseUrl, error);
+    // Return cached models if available (don't replace with fallback on transient failure)
+    return cachedModels.length > 0 ? cachedModels : getFallbackModels();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Provider registration helper
 // ---------------------------------------------------------------------------
 
@@ -313,7 +381,7 @@ function buildOauthBlock(
     refreshToken: async (creds: OAuthCredentials) => {
       const payload = decodeCreds(creds);
       if (!payload.baseUrl) return creds;
-      // Re-register with fresh models so the picker updates without restart.
+      // Refresh the model list so the picker updates without restart.
       // Reuse this same oauthBlock instead of reconstructing it — only the
       // model list changes, not the auth callbacks.
       try {
@@ -340,25 +408,27 @@ export default async function (pi: ExtensionAPI) {
   // (Pi only passes callbacks to login, not pi).
   const oauthBlock = buildOauthBlock(envBaseUrl, envApiKey, pi);
 
-  // Initial stub registration so "Rozalia" appears in /login selector.
-  // Credentials are resolved by Pi's OAuth machinery at request time — we no
-  // longer read ~/.pi/agent/auth.json directly (see commit history for why).
+  // Register the provider with refreshModels so Pi populates models on startup.
+  // The refreshModels hook is called by Pi during its refresh cycle (startup,
+  // explicit model refresh, etc.) with the resolved credential — this is the
+  // canonical Pi mechanism for dynamic model discovery.
   pi.registerProvider("rozalia", {
     name: "Rozalia",
     baseUrl: envBaseUrl,
     api: "openai-completions",
     authHeader: true,
-    models: [],
+    models: [], // Stub — refreshModels will populate the real list
+    refreshModels: refreshRozaliaModels,
     oauth: oauthBlock,
   });
 
   // Best-effort: if the API key is provided via env var, register eagerly so
-  // models appear without waiting for /login.
+  // models appear immediately without waiting for Pi's refresh cycle.
   if (envApiKey) {
     try {
       await registerRozaliaProvider(pi, { baseUrl: envBaseUrl, apiKey: envApiKey }, oauthBlock);
     } catch {
-      // ignore — will retry on next call
+      // ignore — will retry on next Pi refresh cycle
     }
   }
 }
