@@ -205,7 +205,7 @@ function logDiscoveryError(baseUrl: string, error: unknown): void {
 
 let cachedModels: ProviderModelConfig[] = [];
 let lastFetchedAt = 0;
-const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const MODEL_CACHE_TTL_MS = 5 * 1000; // 5 seconds — debounce only; /v1/models is cheap on a self-hosted server and the coordinator already dedupes concurrent calls
 
 /**
  * Resolve baseUrl and apiKey from Pi's credential context.
