@@ -250,6 +250,11 @@ async function refreshRozaliaModels(context: RefreshModelsContext): Promise<Prov
     return cachedModels.length > 0 ? cachedModels : getFallbackModels();
   }
 
+  // No API key means the user is logged out — skip fetch, return stub.
+  if (!apiKey) {
+    return cachedModels.length > 0 ? cachedModels : getFallbackModels();
+  }
+
   try {
     const controller = new AbortController();
     const fetched = await fetchModels(baseUrl, apiKey, controller.signal);
@@ -282,6 +287,9 @@ async function registerRozaliaProvider(
 ): Promise<void> {
   const { baseUrl, apiKey } = creds;
   if (!baseUrl) return;
+
+  // No API key — user is logged out, keep the stub.
+  if (!apiKey) return;
 
   let models: ProviderModelConfig[];
   try {
