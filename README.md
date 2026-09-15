@@ -1,6 +1,6 @@
 # pi-rozalia
 
-An extension for the [Pi coding agent](https://github.com/microsoft/pi-coding-agent) that connects to a [Rozalia AI](https://ai.zygoon.pl) server via the OpenAI-compatible Chat Completions API.
+An extension for the [Pi coding agent](https://github.com/earendil-works/pi) that connects to a [Rozalia AI](https://ai.zygoon.pl) server via the OpenAI-compatible Chat Completions API.
 
 ## Prerequisites
 
@@ -33,7 +33,6 @@ The server URL and API key are stored in `~/.pi/agent/auth.json` and reused on s
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ROZALIA_BASE_URL` | Rozalia AI server base URL | `https://ai.zygoon.pl/v1` |
 | `ROZALIA_BASE_URL` | Rozalia AI server base URL | `https://ai.zygoon.pl/v1` |
 | `ROZALIA_API_KEY` | API key for authentication | *(none)* |
 | `ROZALIA_TIMEOUT` | Model discovery timeout in ms | `5000` |
